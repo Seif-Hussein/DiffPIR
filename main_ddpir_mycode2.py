@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import yaml
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
@@ -61,6 +62,41 @@ def str_to_bool(value: str | bool | None) -> bool | None:
     if lowered in {"0", "false", "no", "n", "off"}:
         return False
     raise argparse.ArgumentTypeError(f"Expected a boolean value, got {value!r}")
+
+
+def parse_metric_names(value) -> List[str]:
+    if value is None:
+        names = ["psnr"]
+    elif isinstance(value, str):
+        names = [
+            item.strip().lower()
+            for item in value.replace(",", ";").replace(" ", ";").split(";")
+            if item.strip()
+        ]
+    else:
+        names = [str(item).strip().lower() for item in value if str(item).strip()]
+
+    valid = {"psnr", "ssim", "lpips"}
+    unknown = sorted(set(names) - valid)
+    if unknown:
+        raise ValueError(f"Unknown metric(s): {unknown}. Valid metrics are {sorted(valid)}")
+    if not names:
+        raise ValueError("At least one metric must be selected.")
+
+    deduped = []
+    for name in names:
+        if name not in deduped:
+            deduped.append(name)
+    return deduped
+
+
+def set_lpips_metric(metric_names: List[str], enabled: bool) -> List[str]:
+    names = list(metric_names)
+    if enabled and "lpips" not in names:
+        names.append("lpips")
+    if not enabled:
+        names = [name for name in names if name != "lpips"]
+    return names
 
 
 def is_cuda_oom(error: RuntimeError) -> bool:
@@ -478,15 +514,56 @@ def save_tensor_batch(tensor: torch.Tensor, names: List[str], save_path: Path, p
             Image.fromarray(image).save(save_path / f"{prefix}{name}")
 
 
+def ssim_for_batch(
+    samples: torch.Tensor,
+    images: torch.Tensor,
+    window_size: int = 11,
+    sigma: float = 1.5,
+) -> torch.Tensor:
+    x = ((samples.detach().float().clamp(-1.0, 1.0) + 1.0) / 2.0)
+    y = ((images.detach().float().clamp(-1.0, 1.0) + 1.0) / 2.0)
+    channels = x.shape[1]
+    coords = torch.arange(window_size, device=x.device, dtype=x.dtype) - window_size // 2
+    kernel_1d = torch.exp(-(coords**2) / (2 * sigma**2))
+    kernel_1d = kernel_1d / kernel_1d.sum()
+    kernel_2d = torch.outer(kernel_1d, kernel_1d)
+    window = kernel_2d.view(1, 1, window_size, window_size).repeat(channels, 1, 1, 1)
+    padding = window_size // 2
+
+    mu_x = F.conv2d(x, window, padding=padding, groups=channels)
+    mu_y = F.conv2d(y, window, padding=padding, groups=channels)
+    mu_x_sq = mu_x.pow(2)
+    mu_y_sq = mu_y.pow(2)
+    mu_xy = mu_x * mu_y
+
+    sigma_x_sq = F.conv2d(x * x, window, padding=padding, groups=channels) - mu_x_sq
+    sigma_y_sq = F.conv2d(y * y, window, padding=padding, groups=channels) - mu_y_sq
+    sigma_xy = F.conv2d(x * y, window, padding=padding, groups=channels) - mu_xy
+
+    c1 = 0.01**2
+    c2 = 0.03**2
+    ssim_map = ((2 * mu_xy + c1) * (2 * sigma_xy + c2)).div(
+        (mu_x_sq + mu_y_sq + c1) * (sigma_x_sq + sigma_y_sq + c2)
+    )
+    return ssim_map.flatten(1).mean(dim=1)
+
+
 def metrics_for_batch(
     samples: torch.Tensor,
     images: torch.Tensor,
+    metric_names: List[str],
     lpips_fn=None,
 ) -> Dict[str, float]:
-    mse = torch.mean((samples - images) ** 2, dim=(1, 2, 3))
-    psnr_values = 20 * torch.log10(2.0 / torch.sqrt(mse + 1e-10))
-    result = {"psnr": float(psnr_values.mean().item())}
-    if lpips_fn is not None:
+    result = {}
+    if "psnr" in metric_names:
+        mse = torch.mean((samples - images) ** 2, dim=(1, 2, 3))
+        psnr_values = 20 * torch.log10(2.0 / torch.sqrt(mse + 1e-10))
+        result["psnr"] = float(psnr_values.mean().item())
+    if "ssim" in metric_names:
+        result["ssim"] = float(ssim_for_batch(samples, images).mean().item())
+    if "lpips" in metric_names:
+        if lpips_fn is None:
+            raise RuntimeError("LPIPS was requested but the LPIPS model was not loaded.")
         with torch.no_grad():
             lpips_value = lpips_fn(samples, images).mean().item()
         result["lpips"] = float(lpips_value)
@@ -531,6 +608,16 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
     save_dir = repo_path(task_config.get("save_dir", "results/mycode2_inverse"))
     result_name = task_config.get("name", "DiffPIR_mycode2")
     output_path = save_dir / f"{result_name}_{task_name}_{task_config['operator']['name']}"
+    has_eval_metrics = "eval_metrics" in task_config
+    metric_names = parse_metric_names(task_config.get("eval_metrics", ["psnr"]))
+    if (
+        not has_eval_metrics
+        and bool(task_config.get("calc_LPIPS", False))
+        and "lpips" not in metric_names
+    ):
+        metric_names.append("lpips")
+    task_config["eval_metrics"] = metric_names
+    task_config["calc_LPIPS"] = "lpips" in metric_names
 
     model_path = repo_path(task_config["model"]["model_path"])
     if dry_run:
@@ -539,6 +626,7 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
                 {
                     "task": task_name,
                     "seed": seed,
+                    "eval_metrics": metric_names,
                     "operator": task_config["operator"],
                     "dataset_images": len(dataset),
                     "image_root_path": str(image_root),
@@ -585,6 +673,7 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
             ("output_path", str(output_path)),
             ("requested_total_images", len(dataset)),
             ("requested_batch_size", int(task_config["batch_size"])),
+            ("eval_metrics", metric_names),
             ("diffpir_iter_num", int(task_config["diffpir"]["iter_num"])),
             ("started_at", task_started_at),
             ("updated_at", task_started_at),
@@ -689,8 +778,15 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
         schedule = make_schedule(task_config["diffpir"], device)
 
         lpips_fn = None
-        if bool(task_config.get("calc_LPIPS", False)):
-            import lpips
+        if "lpips" in metric_names:
+            try:
+                import lpips
+            except ModuleNotFoundError as error:
+                raise ModuleNotFoundError(
+                    "LPIPS was requested but the 'lpips' package is not installed. "
+                    "Install it with `pip install lpips==0.1.4` or remove lpips from "
+                    "eval_metrics."
+                ) from error
 
             lpips_fn = lpips.LPIPS(net=str(task_config.get("lpips_net", "vgg"))).to(device)
         write_run_state("running")
@@ -720,7 +816,12 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
                     task_config["diffpir"],
                     schedule,
                 )
-                batch_metrics = metrics_for_batch(samples, images, lpips_fn=lpips_fn)
+                batch_metrics = metrics_for_batch(
+                    samples,
+                    images,
+                    metric_names=metric_names,
+                    lpips_fn=lpips_fn,
+                )
             except RuntimeError as error:
                 if not is_cuda_oom(error) or batch_size == 1:
                     raise
@@ -877,7 +978,13 @@ def apply_cli_overrides(task_configs: List[Dict[str, Any]], args):
             config["batch_size"] = int(args.batch_size)
         if args.iter_num is not None:
             config["diffpir"]["iter_num"] = int(args.iter_num)
+        if args.eval_metrics is not None:
+            metrics = parse_metric_names(args.eval_metrics)
+            config["eval_metrics"] = metrics
+            config["calc_LPIPS"] = "lpips" in metrics
         if args.calc_lpips is not None:
+            metrics = parse_metric_names(config.get("eval_metrics", ["psnr"]))
+            config["eval_metrics"] = set_lpips_metric(metrics, bool(args.calc_lpips))
             config["calc_LPIPS"] = bool(args.calc_lpips)
         if args.save_dir is not None:
             config["save_dir"] = args.save_dir
@@ -901,6 +1008,7 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--iter-num", type=int, default=None)
+    parser.add_argument("--eval-metrics", default=None)
     parser.add_argument("--calc-lpips", type=str_to_bool, default=None)
     parser.add_argument("--save-dir", default=None)
     parser.add_argument("--dry-run", action="store_true")

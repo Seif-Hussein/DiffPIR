@@ -87,7 +87,7 @@ cells = [
             "phase_retrieval",
         ]
 
-        CALC_LPIPS = False  #@param {type:"boolean"}
+        EVAL_METRICS = "psnr;ssim;lpips"  #@param {type:"string"}
         SAVE_E = True  #@param {type:"boolean"}
         SAVE_L = False  #@param {type:"boolean"}
         SAVE_H = False  #@param {type:"boolean"}
@@ -235,6 +235,17 @@ cells = [
         import yaml
 
         measurement_sigma = 0.05
+        metric_list = [
+            item.strip().lower()
+            for item in EVAL_METRICS.replace(",", ";").replace(" ", ";").split(";")
+            if item.strip()
+        ]
+        unknown_metrics = sorted(set(metric_list) - {"psnr", "ssim", "lpips"})
+        if unknown_metrics:
+            raise ValueError(f"Unknown metrics: {unknown_metrics}")
+        if not metric_list:
+            raise ValueError("EVAL_METRICS must contain at least one metric.")
+        calc_lpips = "lpips" in metric_list
         effective_seed = (
             random.SystemRandom().randint(0, 2**31 - 1)
             if RANDOMIZE_SEED
@@ -370,7 +381,8 @@ cells = [
                 "save_E": bool(SAVE_E),
                 "save_L": bool(SAVE_L),
                 "save_H": bool(SAVE_H),
-                "calc_LPIPS": bool(CALC_LPIPS),
+                "eval_metrics": metric_list,
+                "calc_LPIPS": bool(calc_lpips),
                 "lpips_net": "vgg",
                 "data": {
                     "name": "FFHQ",
@@ -432,8 +444,8 @@ cells = [
             str(BATCH_SIZE),
             "--seed",
             str(effective_seed),
-            "--calc-lpips",
-            str(CALC_LPIPS).lower(),
+            "--eval-metrics",
+            ";".join(metric_list),
             "--dry-run",
         ]
         subprocess.run(cmd, check=True)
@@ -470,8 +482,8 @@ cells = [
             str(BATCH_SIZE),
             "--seed",
             str(effective_seed),
-            "--calc-lpips",
-            str(CALC_LPIPS).lower(),
+            "--eval-metrics",
+            ";".join(metric_list),
         ]
 
         context_path = run_aux_root / f"{run_tag}.context.json"
@@ -491,6 +503,7 @@ cells = [
         print(f"Images: {effective_total_images}")
         print(f"Requested batch size: {BATCH_SIZE}")
         print(f"Seed: {effective_seed}")
+        print(f"Metrics: {metric_list}")
         print(f"Log: {latest_log_path}")
         print("\\nCommand:\\n")
         print(" ".join(shlex.quote(part) for part in run_cmd))

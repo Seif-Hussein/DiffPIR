@@ -8,6 +8,10 @@ defaults:
   save_E: true
   save_L: true
   save_H: false
+  eval_metrics:
+    - psnr
+    - ssim
+    - lpips
   calc_LPIPS: true
   lpips_net: vgg
 

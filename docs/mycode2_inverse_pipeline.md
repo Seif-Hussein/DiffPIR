@@ -48,6 +48,12 @@ Override the random seed:
 python main_ddpir_mycode2.py --seed 42
 ```
 
+Choose metrics:
+
+```powershell
+python main_ddpir_mycode2.py --eval-metrics "psnr;ssim;lpips"
+```
+
 Quick smoke run:
 
 ```powershell
@@ -76,6 +82,7 @@ The Colab defaults now mirror the PDHG single-run notebooks:
 - image slice: `DATA_START_IDX=0`, `TOTAL_IMAGES=100`
 - requested batch size: `BATCH_SIZE=100`
 - fixed seed: `SEED=42`
+- metrics: `EVAL_METRICS="psnr;ssim;lpips"`
 - measurement noise: `sigma=0.05` for every inverse problem
 
 Set `RANDOMIZE_SEED=True` in the Colab controls to draw a fresh seed for a run.
