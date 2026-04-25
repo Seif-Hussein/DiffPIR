@@ -61,6 +61,16 @@ def str_to_bool(value: str | bool | None) -> bool | None:
     raise argparse.ArgumentTypeError(f"Expected a boolean value, got {value!r}")
 
 
+def is_cuda_oom(error: RuntimeError) -> bool:
+    message = str(error).lower()
+    return "out of memory" in message and ("cuda" in message or "cublas" in message)
+
+
+def clear_cuda_cache():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def find_nearest(array, value):
     if torch.is_tensor(array):
         return int(torch.abs(array.detach() - float(value)).argmin().item())
@@ -554,30 +564,67 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
 
     metric_totals = OrderedDict()
     processed = 0
-    for batch_index, (images, names) in enumerate(dataloader):
-        images = images.to(device)
-        names = list(names)
-        y = operator.measure(images)
-        samples = run_diffpir_batch(
-            images,
-            y,
-            operator,
-            model,
-            diffusion,
-            task_config["diffpir"],
-            schedule,
-        )
-        batch_metrics = metrics_for_batch(samples, images, lpips_fn=lpips_fn)
-        batch_size = images.shape[0]
+    chunk_counter = 0
+
+    def process_images_with_fallback(
+        images_cpu: torch.Tensor,
+        names: List[str],
+        loader_batch_index: int,
+    ):
+        nonlocal processed, chunk_counter
+        batch_size = int(images_cpu.shape[0])
+        if batch_size == 0:
+            return
+
+        try:
+            images = images_cpu.to(device)
+            y = operator.measure(images)
+            samples = run_diffpir_batch(
+                images,
+                y,
+                operator,
+                model,
+                diffusion,
+                task_config["diffpir"],
+                schedule,
+            )
+            batch_metrics = metrics_for_batch(samples, images, lpips_fn=lpips_fn)
+        except RuntimeError as error:
+            if not is_cuda_oom(error) or batch_size == 1:
+                raise
+            clear_cuda_cache()
+            midpoint = max(1, batch_size // 2)
+            logger.warning(
+                "CUDA OOM at requested batch size %d; retrying loader batch %d as %d + %d",
+                batch_size,
+                loader_batch_index + 1,
+                midpoint,
+                batch_size - midpoint,
+            )
+            process_images_with_fallback(
+                images_cpu[:midpoint],
+                names[:midpoint],
+                loader_batch_index,
+            )
+            process_images_with_fallback(
+                images_cpu[midpoint:],
+                names[midpoint:],
+                loader_batch_index,
+            )
+            return
+
         processed += batch_size
+        chunk_counter += 1
         for metric_name, metric_value in batch_metrics.items():
             metric_totals[metric_name] = metric_totals.get(metric_name, 0.0) + (
                 metric_value * batch_size
             )
         logger.info(
-            "batch %d/%d: %s",
-            batch_index + 1,
+            "chunk %d from loader batch %d/%d: size=%d, %s",
+            chunk_counter,
+            loader_batch_index + 1,
             len(dataloader),
+            batch_size,
             ", ".join(f"{k}={v:.4f}" for k, v in batch_metrics.items()),
         )
 
@@ -587,6 +634,12 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
             save_tensor_batch(operator.low_quality_image(y), names, output_path, "L_")
         if bool(task_config.get("save_H", False)):
             save_tensor_batch(images, names, output_path, "H_")
+
+        del images, y, samples
+        clear_cuda_cache()
+
+    for batch_index, (images, names) in enumerate(dataloader):
+        process_images_with_fallback(images, list(names), batch_index)
 
     summary = summarize_metrics(metric_totals, processed)
     with open(output_path / "metrics.json", "w", encoding="utf-8") as handle:

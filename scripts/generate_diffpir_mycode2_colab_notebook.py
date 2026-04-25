@@ -67,11 +67,14 @@ cells = [
         BRANCH = "codex-diffpir-mycode2-colab"  #@param {type:"string"}
         WORKDIR = "/content/DiffPIR"  #@param {type:"string"}
 
-        # Use DiffPIR's bundled demo images by default. You can point this to
-        # a mounted Drive folder containing your FFHQ/mycode2 images.
-        DATA_ROOT = "testsets/demo_test"  #@param {type:"string"}
-        TOTAL_IMAGES = 3  #@param {type:"integer"}
-        BATCH_SIZE = 1  #@param {type:"integer"}
+        # Matches the PDHG single-run notebooks.
+        MOUNT_DRIVE = True  #@param {type:"boolean"}
+        DRIVE_FFHQ_DATA_DIR = "/content/drive/MyDrive/mycode/test-ffhq"  #@param {type:"string"}
+        CACHE_DATASET_TO_LOCAL = True  #@param {type:"boolean"}
+        LOCAL_DATA_CACHE_DIR = "/content/diffpir_test_ffhq_cache"  #@param {type:"string"}
+        DATA_START_IDX = 0  #@param {type:"integer"}
+        TOTAL_IMAGES = 100  #@param {type:"integer"}
+        BATCH_SIZE = 100  #@param {type:"integer"}
 
         TASKS = [
             "down_sampling",
@@ -83,8 +86,22 @@ cells = [
         ]
 
         CALC_LPIPS = False  #@param {type:"boolean"}
+        SAVE_E = True  #@param {type:"boolean"}
+        SAVE_L = False  #@param {type:"boolean"}
+        SAVE_H = False  #@param {type:"boolean"}
         RUN_INSTALL = True  #@param {type:"boolean"}
         DOWNLOAD_FFHQ_CHECKPOINT = True  #@param {type:"boolean"}
+        RUN_IN_BACKGROUND = True  #@param {type:"boolean"}
+        LOG_TAIL_LINES = 120  #@param {type:"integer"}
+        DRIVE_EXPORT_DIR = "/content/drive/MyDrive/diffpir_mycode2_inverse_exports"  #@param {type:"string"}
+        """
+    ),
+    code(
+        """
+        #@title Mount Google Drive
+        if MOUNT_DRIVE:
+            from google.colab import drive
+            drive.mount("/content/drive")
         """
     ),
     code(
@@ -92,14 +109,18 @@ cells = [
         #@title Clone or enter repository
         from pathlib import Path
         import os
+        import shutil
         import subprocess
         import sys
 
         workdir = Path(WORKDIR)
         if REPO_URL:
             if workdir.exists():
-                subprocess.run(["rm", "-rf", str(workdir)], check=True)
-            subprocess.run(["git", "clone", "--branch", BRANCH, REPO_URL, str(workdir)], check=True)
+                shutil.rmtree(workdir)
+            subprocess.run(
+                ["git", "clone", "--branch", BRANCH, "--single-branch", REPO_URL, str(workdir)],
+                check=True,
+            )
 
         if not (workdir / "main_ddpir_mycode2.py").exists():
             raise RuntimeError(
@@ -161,12 +182,47 @@ cells = [
     ),
     code(
         """
-        #@title Optional: mount Google Drive for custom data
-        # Uncomment these lines if DATA_ROOT should point into your Drive.
-        #
-        # from google.colab import drive
-        # drive.mount('/content/drive')
-        # DATA_ROOT = '/content/drive/MyDrive/path/to/images'
+        #@title Prepare the FFHQ dataset slice
+        from pathlib import Path
+        import shutil
+
+        valid_extensions = {".jpg", ".jpeg", ".png"}
+        source_data_dir = Path(DRIVE_FFHQ_DATA_DIR)
+        if not source_data_dir.exists():
+            raise FileNotFoundError(f"FFHQ dataset path not found: {source_data_dir}")
+
+        source_images = sorted(
+            path
+            for path in source_data_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() in valid_extensions
+        )
+        data_end_idx = int(DATA_START_IDX) + int(TOTAL_IMAGES)
+        selected_images = source_images[int(DATA_START_IDX):data_end_idx]
+        if not selected_images:
+            raise FileNotFoundError(
+                f"No FFHQ images found in slice [{DATA_START_IDX}, {data_end_idx}) under {source_data_dir}"
+            )
+
+        if len(selected_images) < int(TOTAL_IMAGES):
+            print(f"Requested {TOTAL_IMAGES} images, found {len(selected_images)} in the selected slice.")
+
+        if CACHE_DATASET_TO_LOCAL:
+            effective_data_root = Path(LOCAL_DATA_CACHE_DIR)
+            if effective_data_root.exists():
+                shutil.rmtree(effective_data_root)
+            effective_data_root.mkdir(parents=True, exist_ok=True)
+            for index, src in enumerate(selected_images):
+                shutil.copy2(src, effective_data_root / f"{index:05d}_{src.name}")
+            effective_start_idx = 0
+            print(f"Copied {len(selected_images)} images to local runtime cache: {effective_data_root}")
+        else:
+            effective_data_root = source_data_dir
+            effective_start_idx = int(DATA_START_IDX)
+
+        effective_total_images = len(selected_images)
+        print(f"Dataset source: {source_data_dir}")
+        print(f"Dataset used by DiffPIR: {effective_data_root}")
+        print(f"Dataset slice: [{DATA_START_IDX}, {data_end_idx}) -> {effective_total_images} images")
         """
     ),
     code(
@@ -296,19 +352,19 @@ cells = [
                 "seed": 99,
                 "gpu": 0,
                 "name": "DiffPIR_colab",
-                "total_images": int(TOTAL_IMAGES),
+                "total_images": int(effective_total_images),
                 "batch_size": int(BATCH_SIZE),
                 "save_dir": "results/colab_mycode2_inverse",
-                "save_E": True,
-                "save_L": True,
-                "save_H": False,
+                "save_E": bool(SAVE_E),
+                "save_L": bool(SAVE_L),
+                "save_H": bool(SAVE_H),
                 "calc_LPIPS": bool(CALC_LPIPS),
                 "lpips_net": "vgg",
                 "data": {
                     "name": "FFHQ",
                     "resolution": 256,
-                    "image_root_path": str(DATA_ROOT),
-                    "start_idx": 0,
+                    "image_root_path": str(effective_data_root),
+                    "start_idx": int(effective_start_idx),
                     "end_idx": -1,
                     "valid_extensions": [".jpg", ".jpeg", ".png"],
                 },
@@ -358,7 +414,7 @@ cells = [
             "--tasks",
             *TASKS,
             "--total-images",
-            str(TOTAL_IMAGES),
+            str(effective_total_images),
             "--batch-size",
             str(BATCH_SIZE),
             "--calc-lpips",
@@ -370,11 +426,23 @@ cells = [
     ),
     code(
         """
-        #@title Run selected simulations
+        #@title Build run command
+        import json
+        import shlex
         import subprocess
         import sys
+        import time
+        from pathlib import Path
 
-        cmd = [
+        session_tag = time.strftime("%Y%m%d-%H%M%S")
+        run_tag = f"diffpir_mycode2_{session_tag}"
+        save_root = Path("results/colab_mycode2_inverse")
+        run_aux_root = Path("single_runs")
+        run_aux_root.mkdir(parents=True, exist_ok=True)
+        latest_log_path = run_aux_root / f"{run_tag}.log"
+        latest_pid_path = run_aux_root / f"{run_tag}.pid"
+
+        run_cmd = [
             sys.executable,
             "main_ddpir_mycode2.py",
             "--pipeline",
@@ -382,14 +450,73 @@ cells = [
             "--tasks",
             *TASKS,
             "--total-images",
-            str(TOTAL_IMAGES),
+            str(effective_total_images),
             "--batch-size",
             str(BATCH_SIZE),
             "--calc-lpips",
             str(CALC_LPIPS).lower(),
         ]
-        print(" ".join(cmd))
-        subprocess.run(cmd, check=True)
+
+        context_path = run_aux_root / f"{run_tag}.context.json"
+        last_context = {
+            "run_tag": run_tag,
+            "save_root": save_root.as_posix(),
+            "latest_log_path": latest_log_path.as_posix(),
+            "latest_pid_path": latest_pid_path.as_posix(),
+            "context_path": context_path.as_posix(),
+            "run_cmd": run_cmd,
+        }
+        with context_path.open("w", encoding="utf-8") as handle:
+            json.dump(last_context, handle, indent=2)
+
+        print(f"Run tag: {run_tag}")
+        print(f"Dataset: {effective_data_root}")
+        print(f"Images: {effective_total_images}")
+        print(f"Requested batch size: {BATCH_SIZE}")
+        print(f"Log: {latest_log_path}")
+        print("\\nCommand:\\n")
+        print(" ".join(shlex.quote(part) for part in run_cmd))
+        """
+    ),
+    code(
+        """
+        #@title Launch selected simulations
+        import subprocess
+        from pathlib import Path
+
+        latest_log_path = Path(last_context["latest_log_path"])
+        latest_pid_path = Path(last_context["latest_pid_path"])
+        latest_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if RUN_IN_BACKGROUND:
+            with latest_log_path.open("w", encoding="utf-8") as log_handle:
+                process = subprocess.Popen(
+                    last_context["run_cmd"],
+                    cwd=Path.cwd(),
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            latest_pid_path.write_text(str(process.pid), encoding="utf-8")
+            print(f"PID: {process.pid}")
+            print(f"Log: {latest_log_path}")
+            print(f"Save root: {last_context['save_root']}")
+        else:
+            subprocess.run(last_context["run_cmd"], check=True)
+        """
+    ),
+    code(
+        """
+        #@title Show recent log lines
+        from pathlib import Path
+
+        log_path = Path(last_context["latest_log_path"])
+        if not log_path.exists():
+            raise FileNotFoundError(f"Log file not found: {log_path}")
+
+        lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        tail = lines[-int(LOG_TAIL_LINES):]
+        print("\\n".join(tail) if tail else "<log is empty>")
         """
     ),
     code(
@@ -402,15 +529,47 @@ cells = [
         from PIL import Image
 
         rows = []
-        for metrics_path in sorted(Path("results/colab_mycode2_inverse").glob("*/metrics.json")):
+        save_root = Path(last_context["save_root"])
+        for metrics_path in sorted(save_root.glob("*/metrics.json")):
             metrics = json.loads(metrics_path.read_text())
             rows.append({"run": metrics_path.parent.name, **metrics})
         display(pd.DataFrame(rows))
 
-        preview_paths = sorted(Path("results/colab_mycode2_inverse").glob("*/E_*.png"))[:8]
+        preview_paths = sorted(save_root.glob("*/E_*.png"))[:8]
         for path in preview_paths:
             print(path)
             display(Image.open(path).resize((160, 160)))
+        """
+    ),
+    code(
+        """
+        #@title Copy run artifacts to Drive
+        import shutil
+        from pathlib import Path
+
+        export_root = Path(DRIVE_EXPORT_DIR)
+        export_root.mkdir(parents=True, exist_ok=True)
+
+        targets = [
+            Path(last_context["save_root"]),
+            Path(last_context["latest_log_path"]),
+            Path(last_context["context_path"]),
+        ]
+
+        for src in targets:
+            if not src.exists():
+                print(f"Skipping missing path: {src}")
+                continue
+
+            dst = export_root / src.name
+            if src.is_dir():
+                if dst.exists():
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst)
+            else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            print(f"Copied {src} -> {dst}")
         """
     ),
 ]

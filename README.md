@@ -74,7 +74,9 @@ python main_ddpir_mycode2.py
 
 See [docs/mycode2_inverse_pipeline.md](docs/mycode2_inverse_pipeline.md) for
 task mappings, defaults, subset commands, and the Colab notebook at
-`notebooks/DiffPIR_mycode2_inverse_colab.ipynb`.
+`notebooks/DiffPIR_mycode2_inverse_colab.ipynb`. The Colab defaults to the same
+Drive FFHQ slice used by the PDHG notebooks:
+`/content/drive/MyDrive/mycode/test-ffhq`, 100 images, requested batch size 100.
 
 ### Train Your Own Diffusion Models
 To train a new diffusion model, please follow [OpenAI Guided Diffusion](https://github.com/openai/guided-diffusion).

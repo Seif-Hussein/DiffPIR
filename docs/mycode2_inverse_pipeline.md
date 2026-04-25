@@ -58,14 +58,24 @@ The Colab notebook is generated at:
 notebooks/DiffPIR_mycode2_inverse_colab.ipynb
 ```
 
-Open it in Colab, set `REPO_URL` to the fork or branch that contains this
-runner, and run the cells. The notebook downloads `ffhq_10m.pt`, writes a
-Colab-specific pipeline under `configs/colab_mycode2_inverse/`, dry-runs the
-selected tasks, then launches the simulations.
+Open it in Colab and run the cells. The notebook defaults to
+`https://github.com/Seif-Hussein/DiffPIR.git` on branch
+`codex-diffpir-mycode2-colab`, downloads `ffhq_10m.pt`, writes a Colab-specific
+pipeline under `configs/colab_mycode2_inverse/`, dry-runs the selected tasks,
+then launches the simulations.
 
-By default it uses `testsets/demo_test` as a tiny smoke dataset. Set `DATA_ROOT`
-to a mounted Google Drive folder to run the same image set as your local
-experiments. All inverse problems use measurement noise `sigma=0.05`.
+The Colab defaults now mirror the PDHG single-run notebooks:
+
+- Drive dataset: `/content/drive/MyDrive/mycode/test-ffhq`
+- image slice: `DATA_START_IDX=0`, `TOTAL_IMAGES=100`
+- requested batch size: `BATCH_SIZE=100`
+- measurement noise: `sigma=0.05` for every inverse problem
+
+For speed, the notebook copies the selected Drive images into
+`/content/diffpir_test_ffhq_cache` once and runs DiffPIR from that local runtime
+cache. The runner also tries the requested batch size first and automatically
+splits a batch if CUDA reports out-of-memory, so the Colab uses the largest
+working batch size instead of failing immediately.
 
 ## Paper Hyperparameters
 
