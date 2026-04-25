@@ -1,5 +1,5 @@
 defaults:
-  seed: 99
+  seed: 42
   gpu: 0
   name: DiffPIR_mycode2
   total_images: 10

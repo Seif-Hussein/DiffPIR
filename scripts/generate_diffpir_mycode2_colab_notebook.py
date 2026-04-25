@@ -75,6 +75,7 @@ cells = [
         DATA_START_IDX = 0  #@param {type:"integer"}
         TOTAL_IMAGES = 100  #@param {type:"integer"}
         BATCH_SIZE = 100  #@param {type:"integer"}
+        SEED = 42  #@param {type:"integer"}
 
         TASKS = [
             "down_sampling",
@@ -353,7 +354,7 @@ cells = [
 
         pipeline = {
             "defaults": {
-                "seed": 99,
+                "seed": int(SEED),
                 "gpu": 0,
                 "name": "DiffPIR_colab",
                 "total_images": int(effective_total_images),
