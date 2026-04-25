@@ -123,3 +123,8 @@ The relevant knobs are in each task YAML under `diffpir`:
 - `data_step_iters`
 - `data_loss_reduction`
 - `guidance_scale`
+
+For gradient-based operators, `data_loss_reduction` is set to `sum` so the
+update uses the unnormalized residual gradient, matching the DiffPIR/DPS-style
+first-order correction. Using `mean` makes the data-consistency step far too
+small for image measurements and can produce very low PSNR.

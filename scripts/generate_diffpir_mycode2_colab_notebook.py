@@ -254,7 +254,7 @@ cells = [
             "data_consistency": "auto",
             "data_step_iters": 1,
             "data_step_scale": 1.0,
-            "data_loss_reduction": "mean",
+            "data_loss_reduction": "sum",
             "clamp_after_data": True,
             "final_sample": "xt",
         }
@@ -273,6 +273,7 @@ cells = [
                     "lambda_": 8.0,
                     "zeta": 0.2,
                     "data_consistency": "gradient",
+                    "data_loss_reduction": "sum",
                 },
             },
             "inpainting_rand": {
@@ -298,6 +299,7 @@ cells = [
                     "lambda_": 7.0,
                     "zeta": 0.4,
                     "data_consistency": "gradient",
+                    "data_loss_reduction": "sum",
                 },
             },
             "gaussian_blur": {
@@ -312,6 +314,7 @@ cells = [
                     "lambda_": 7.0,
                     "zeta": 0.3,
                     "data_consistency": "gradient",
+                    "data_loss_reduction": "sum",
                 },
             },
             "inpainting_box": {
@@ -338,6 +341,7 @@ cells = [
                     "zeta": 0.3,
                     "init_from_measurement": False,
                     "data_consistency": "gradient",
+                    "data_loss_reduction": "sum",
                     "data_step_scale": 0.5,
                     "final_sample": "x0",
                 },

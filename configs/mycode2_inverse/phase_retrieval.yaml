@@ -12,7 +12,7 @@ diffpir:
   zeta: 0.3
   init_from_measurement: false
   data_consistency: gradient
+  data_loss_reduction: sum
   data_step_scale: 0.5
   data_step_iters: 1
-  data_loss_reduction: mean
   final_sample: x0

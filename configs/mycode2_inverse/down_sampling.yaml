@@ -14,3 +14,4 @@ diffpir:
   data_consistency: gradient
   data_step_scale: 1.0
   data_step_iters: 1
+  data_loss_reduction: sum

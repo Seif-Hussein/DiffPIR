@@ -11,5 +11,6 @@ diffpir:
   lambda_: 7.0
   zeta: 0.4
   data_consistency: gradient
+  data_loss_reduction: sum
   data_step_scale: 1.0
   data_step_iters: 1
