@@ -1,0 +1,14 @@
+task: inpainting_box
+
+operator:
+  name: inpainting
+  mask_type: box
+  mask_len_range: [128, 129]
+  resolution: 256
+  sigma: 0.05
+
+diffpir:
+  iter_num: 100
+  lambda_: 6.0
+  zeta: 0.5
+  data_consistency: auto

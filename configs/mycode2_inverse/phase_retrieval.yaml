@@ -1,0 +1,18 @@
+task: phase_retrieval
+
+operator:
+  name: phase_retrieval
+  oversample: 2.0
+  resolution: 256
+  sigma: 0.05
+
+diffpir:
+  iter_num: 100
+  lambda_: 8.0
+  zeta: 0.3
+  init_from_measurement: false
+  data_consistency: gradient
+  data_step_scale: 0.5
+  data_step_iters: 1
+  data_loss_reduction: mean
+  final_sample: x0

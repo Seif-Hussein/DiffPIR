@@ -1,0 +1,80 @@
+defaults:
+  seed: 99
+  gpu: 0
+  name: DiffPIR_mycode2
+  total_images: 10
+  batch_size: 10
+  save_dir: results/mycode2_inverse
+  save_E: true
+  save_L: true
+  save_H: false
+  calc_LPIPS: true
+  lpips_net: vgg
+
+  data:
+    name: FFHQ
+    resolution: 256
+    image_root_path: ../../mycode2/demo-samples/ffhq
+    start_idx: 0
+    end_idx: -1
+    valid_extensions:
+      - .jpg
+      - .jpeg
+      - .png
+
+  model:
+    name: ddpm
+    model_path: ../../mycode2/pretrained-models/ffhq_10m.pt
+    image_size: 256
+    num_channels: 128
+    num_res_blocks: 1
+    channel_mult: ""
+    attention_resolutions: "16"
+    learn_sigma: true
+    class_cond: false
+    use_checkpoint: false
+    num_heads: 4
+    num_head_channels: 64
+    num_heads_upsample: -1
+    use_scale_shift_norm: true
+    dropout: 0.0
+    resblock_updown: true
+    use_fp16: false
+    use_new_attention_order: false
+
+  diffpir:
+    num_train_timesteps: 1000
+    iter_num: 100
+    iter_num_U: 1
+    lambda_: 1.0
+    zeta: 0.1
+    eta: 0.0
+    guidance_scale: 1.0
+    generate_mode: DiffPIR
+    model_output_type: pred_xstart
+    ddim_sample: false
+    skip_type: quad
+    beta_start: 0.0001
+    beta_end: 0.02
+    noise_init_img: max
+    init_from_measurement: true
+    data_consistency: auto
+    data_step_iters: 1
+    data_step_scale: 1.0
+    data_loss_reduction: mean
+    clamp_after_data: true
+    final_sample: xt
+
+tasks:
+  - name: down_sampling
+    config: configs/mycode2_inverse/down_sampling.yaml
+  - name: inpainting_rand
+    config: configs/mycode2_inverse/inpainting_rand.yaml
+  - name: motion_blur
+    config: configs/mycode2_inverse/motion_blur.yaml
+  - name: gaussian_blur
+    config: configs/mycode2_inverse/gaussian_blur.yaml
+  - name: inpainting_box
+    config: configs/mycode2_inverse/inpainting_box.yaml
+  - name: phase_retrieval
+    config: configs/mycode2_inverse/phase_retrieval.yaml

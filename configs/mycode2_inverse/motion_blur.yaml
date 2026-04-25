@@ -1,0 +1,15 @@
+task: motion_blur
+
+operator:
+  name: motion_blur
+  kernel_size: 61
+  intensity: 0.5
+  sigma: 0.05
+
+diffpir:
+  iter_num: 100
+  lambda_: 7.0
+  zeta: 0.4
+  data_consistency: gradient
+  data_step_scale: 1.0
+  data_step_iters: 1

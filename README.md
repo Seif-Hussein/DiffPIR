@@ -61,6 +61,21 @@ python main_ddpir.py --opt configs/deblur.yaml # deblur
 python main_ddpir.py --opt configs/inpaint.yaml # inpainting
 ```
 
+### mycode2 inverse-problem pipeline
+
+This checkout also includes a DiffPIR runner for the inverse-problem simulations
+from `C:/Users/Seif/Desktop/mycode2`: downsampling, random inpainting, motion
+blur, Gaussian blur, box inpainting, and phase retrieval.
+
+```python
+python main_ddpir_mycode2.py --dry-run
+python main_ddpir_mycode2.py
+```
+
+See [docs/mycode2_inverse_pipeline.md](docs/mycode2_inverse_pipeline.md) for
+task mappings, defaults, subset commands, and the Colab notebook at
+`notebooks/DiffPIR_mycode2_inverse_colab.ipynb`.
+
 ### Train Your Own Diffusion Models
 To train a new diffusion model, please follow [OpenAI Guided Diffusion](https://github.com/openai/guided-diffusion).
 
