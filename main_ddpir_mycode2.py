@@ -5,7 +5,9 @@ import logging
 import os
 import random
 import shutil
+import time
 from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -69,6 +71,18 @@ def is_cuda_oom(error: RuntimeError) -> bool:
 def clear_cuda_cache():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def atomic_write_json(path: Path, data: Dict[str, Any]):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2)
+    tmp_path.replace(path)
 
 
 def find_nearest(array, value):
@@ -547,105 +561,278 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
     with open(output_path / "resolved_config.yaml", "w", encoding="utf-8") as handle:
         yaml.safe_dump(task_config, handle, sort_keys=False)
 
+    progress_path = output_path / "progress.json"
+    history_path = output_path / "history.json"
+    metric_history_path = output_path / "metric_history.json"
+    metrics_path = output_path / "metrics.json"
+    log_path = output_path / f"{logger_name}.log"
+    task_started_at = now_iso()
+    task_start_time = time.perf_counter()
+    metric_totals = OrderedDict()
+    processed = 0
+    chunk_counter = 0
+    processing_elapsed_seconds = 0.0
+    history = OrderedDict(
+        [
+            ("schema_version", 1),
+            ("status", "initializing"),
+            ("task", task_name),
+            ("operator", task_config["operator"]),
+            ("seed", seed),
+            ("device", str(device)),
+            ("image_root_path", str(image_root)),
+            ("output_path", str(output_path)),
+            ("requested_total_images", len(dataset)),
+            ("requested_batch_size", int(task_config["batch_size"])),
+            ("diffpir_iter_num", int(task_config["diffpir"]["iter_num"])),
+            ("started_at", task_started_at),
+            ("updated_at", task_started_at),
+            ("completed_at", None),
+            ("processed_images", 0),
+            ("total_images", len(dataset)),
+            ("elapsed_seconds", 0.0),
+            ("elapsed_seconds_per_image", None),
+            ("processing_elapsed_seconds", 0.0),
+            ("processing_elapsed_seconds_per_image", None),
+            ("running_metrics", OrderedDict()),
+            ("chunks", []),
+            ("oom_retries", []),
+            ("error", None),
+        ]
+    )
+
+    def current_metrics() -> OrderedDict:
+        if processed == 0:
+            return OrderedDict()
+        return summarize_metrics(metric_totals, processed)
+
+    def write_run_state(status: str, current: Dict[str, Any] | None = None):
+        elapsed = time.perf_counter() - task_start_time
+        elapsed_per_image = elapsed / processed if processed else None
+        processing_elapsed_per_image = (
+            processing_elapsed_seconds / processed if processed else None
+        )
+        remaining_images = max(0, len(dataset) - processed)
+        estimated_remaining = (
+            remaining_images * elapsed_per_image if elapsed_per_image is not None else None
+        )
+        estimated_processing_remaining = (
+            remaining_images * processing_elapsed_per_image
+            if processing_elapsed_per_image is not None
+            else None
+        )
+        updated_at = now_iso()
+        running_metrics = current_metrics()
+
+        history["status"] = status
+        history["updated_at"] = updated_at
+        history["processed_images"] = processed
+        history["elapsed_seconds"] = elapsed
+        history["elapsed_seconds_per_image"] = elapsed_per_image
+        history["processing_elapsed_seconds"] = processing_elapsed_seconds
+        history["processing_elapsed_seconds_per_image"] = processing_elapsed_per_image
+        history["running_metrics"] = running_metrics
+        if status in {"completed", "failed"} and history["completed_at"] is None:
+            history["completed_at"] = updated_at
+
+        progress = OrderedDict(
+            [
+                ("schema_version", 1),
+                ("status", status),
+                ("task", task_name),
+                ("operator_name", task_config["operator"]["name"]),
+                ("updated_at", updated_at),
+                ("started_at", task_started_at),
+                ("completed_at", history["completed_at"]),
+                ("processed_images", processed),
+                ("total_images", len(dataset)),
+                (
+                    "percent_complete",
+                    100.0 * processed / max(1, len(dataset)),
+                ),
+                ("remaining_images", remaining_images),
+                ("requested_batch_size", int(task_config["batch_size"])),
+                ("completed_chunks", chunk_counter),
+                ("elapsed_seconds", elapsed),
+                ("elapsed_seconds_per_image", elapsed_per_image),
+                ("processing_elapsed_seconds", processing_elapsed_seconds),
+                ("processing_elapsed_seconds_per_image", processing_elapsed_per_image),
+                ("estimated_remaining_seconds", estimated_remaining),
+                ("estimated_processing_remaining_seconds", estimated_processing_remaining),
+                ("running_metrics", running_metrics),
+                ("output_path", str(output_path)),
+                ("progress_path", str(progress_path)),
+                ("history_path", str(history_path)),
+                ("metric_history_path", str(metric_history_path)),
+                ("metrics_path", str(metrics_path)),
+                ("log_path", str(log_path)),
+            ]
+        )
+        if current is not None:
+            progress["current"] = current
+
+        atomic_write_json(progress_path, progress)
+        atomic_write_json(history_path, history)
+        atomic_write_json(metric_history_path, history)
+
     dataloader = DataLoader(
         dataset,
         batch_size=int(task_config["batch_size"]),
         shuffle=False,
         num_workers=0,
     )
-    model, diffusion = load_model(task_config["model"], device)
-    schedule = make_schedule(task_config["diffpir"], device)
+    write_run_state("loading_model")
 
-    lpips_fn = None
-    if bool(task_config.get("calc_LPIPS", False)):
-        import lpips
+    try:
+        model, diffusion = load_model(task_config["model"], device)
+        schedule = make_schedule(task_config["diffpir"], device)
 
-        lpips_fn = lpips.LPIPS(net=str(task_config.get("lpips_net", "vgg"))).to(device)
+        lpips_fn = None
+        if bool(task_config.get("calc_LPIPS", False)):
+            import lpips
 
-    metric_totals = OrderedDict()
-    processed = 0
-    chunk_counter = 0
+            lpips_fn = lpips.LPIPS(net=str(task_config.get("lpips_net", "vgg"))).to(device)
+        write_run_state("running")
 
-    def process_images_with_fallback(
-        images_cpu: torch.Tensor,
-        names: List[str],
-        loader_batch_index: int,
-    ):
-        nonlocal processed, chunk_counter
-        batch_size = int(images_cpu.shape[0])
-        if batch_size == 0:
-            return
+        def process_images_with_fallback(
+            images_cpu: torch.Tensor,
+            names: List[str],
+            loader_batch_index: int,
+        ):
+            nonlocal processed, chunk_counter, processing_elapsed_seconds
+            batch_size = int(images_cpu.shape[0])
+            if batch_size == 0:
+                return
 
-        try:
-            images = images_cpu.to(device)
-            y = operator.measure(images)
-            samples = run_diffpir_batch(
-                images,
-                y,
-                operator,
-                model,
-                diffusion,
-                task_config["diffpir"],
-                schedule,
+            chunk_started_at = now_iso()
+            chunk_start_time = time.perf_counter()
+            images = y = samples = None
+            try:
+                images = images_cpu.to(device)
+                y = operator.measure(images)
+                samples = run_diffpir_batch(
+                    images,
+                    y,
+                    operator,
+                    model,
+                    diffusion,
+                    task_config["diffpir"],
+                    schedule,
+                )
+                batch_metrics = metrics_for_batch(samples, images, lpips_fn=lpips_fn)
+            except RuntimeError as error:
+                if not is_cuda_oom(error) or batch_size == 1:
+                    raise
+                del images, y, samples
+                clear_cuda_cache()
+                midpoint = max(1, batch_size // 2)
+                oom_retry = OrderedDict(
+                    [
+                        ("at", now_iso()),
+                        ("loader_batch_index", loader_batch_index),
+                        ("requested_chunk_size", batch_size),
+                        ("split_sizes", [midpoint, batch_size - midpoint]),
+                        (
+                            "elapsed_before_retry_seconds",
+                            time.perf_counter() - chunk_start_time,
+                        ),
+                        ("message", str(error).splitlines()[0]),
+                    ]
+                )
+                history["oom_retries"].append(oom_retry)
+                logger.warning(
+                    "CUDA OOM at requested batch size %d; retrying loader batch %d as %d + %d",
+                    batch_size,
+                    loader_batch_index + 1,
+                    midpoint,
+                    batch_size - midpoint,
+                )
+                write_run_state("retrying_after_oom", current=oom_retry)
+                process_images_with_fallback(
+                    images_cpu[:midpoint],
+                    names[:midpoint],
+                    loader_batch_index,
+                )
+                process_images_with_fallback(
+                    images_cpu[midpoint:],
+                    names[midpoint:],
+                    loader_batch_index,
+                )
+                return
+
+            chunk_elapsed = time.perf_counter() - chunk_start_time
+            processed += batch_size
+            processing_elapsed_seconds += chunk_elapsed
+            chunk_counter += 1
+            for metric_name, metric_value in batch_metrics.items():
+                metric_totals[metric_name] = metric_totals.get(metric_name, 0.0) + (
+                    metric_value * batch_size
+                )
+            running_metrics = current_metrics()
+            chunk_record = OrderedDict(
+                [
+                    ("chunk_index", chunk_counter - 1),
+                    ("loader_batch_index", loader_batch_index),
+                    ("names", names),
+                    ("batch_size", batch_size),
+                    ("started_at", chunk_started_at),
+                    ("ended_at", now_iso()),
+                    ("elapsed_seconds", chunk_elapsed),
+                    ("elapsed_seconds_per_image", chunk_elapsed / max(1, batch_size)),
+                    ("cumulative_processing_elapsed_seconds", processing_elapsed_seconds),
+                    (
+                        "cumulative_processing_seconds_per_image",
+                        processing_elapsed_seconds / max(1, processed),
+                    ),
+                    ("processed_images", processed),
+                    ("total_images", len(dataset)),
+                    (
+                        "percent_complete",
+                        100.0 * processed / max(1, len(dataset)),
+                    ),
+                    ("metrics", batch_metrics),
+                    ("running_metrics", running_metrics),
+                ]
             )
-            batch_metrics = metrics_for_batch(samples, images, lpips_fn=lpips_fn)
-        except RuntimeError as error:
-            if not is_cuda_oom(error) or batch_size == 1:
-                raise
-            clear_cuda_cache()
-            midpoint = max(1, batch_size // 2)
-            logger.warning(
-                "CUDA OOM at requested batch size %d; retrying loader batch %d as %d + %d",
-                batch_size,
+            history["chunks"].append(chunk_record)
+            logger.info(
+                "chunk %d from loader batch %d/%d: size=%d, seconds/image=%.4f, %s",
+                chunk_counter,
                 loader_batch_index + 1,
-                midpoint,
-                batch_size - midpoint,
+                len(dataloader),
+                batch_size,
+                chunk_record["elapsed_seconds_per_image"],
+                ", ".join(f"{k}={v:.4f}" for k, v in batch_metrics.items()),
             )
-            process_images_with_fallback(
-                images_cpu[:midpoint],
-                names[:midpoint],
-                loader_batch_index,
-            )
-            process_images_with_fallback(
-                images_cpu[midpoint:],
-                names[midpoint:],
-                loader_batch_index,
-            )
-            return
 
-        processed += batch_size
-        chunk_counter += 1
-        for metric_name, metric_value in batch_metrics.items():
-            metric_totals[metric_name] = metric_totals.get(metric_name, 0.0) + (
-                metric_value * batch_size
-            )
-        logger.info(
-            "chunk %d from loader batch %d/%d: size=%d, %s",
-            chunk_counter,
-            loader_batch_index + 1,
-            len(dataloader),
-            batch_size,
-            ", ".join(f"{k}={v:.4f}" for k, v in batch_metrics.items()),
-        )
+            if bool(task_config.get("save_E", True)):
+                save_tensor_batch(samples, names, output_path, "E_")
+            if bool(task_config.get("save_L", True)):
+                save_tensor_batch(operator.low_quality_image(y), names, output_path, "L_")
+            if bool(task_config.get("save_H", False)):
+                save_tensor_batch(images, names, output_path, "H_")
 
-        if bool(task_config.get("save_E", True)):
-            save_tensor_batch(samples, names, output_path, "E_")
-        if bool(task_config.get("save_L", True)):
-            save_tensor_batch(operator.low_quality_image(y), names, output_path, "L_")
-        if bool(task_config.get("save_H", False)):
-            save_tensor_batch(images, names, output_path, "H_")
+            write_run_state("running", current=chunk_record)
+            del images, y, samples
+            clear_cuda_cache()
 
-        del images, y, samples
-        clear_cuda_cache()
+        for batch_index, (images, names) in enumerate(dataloader):
+            process_images_with_fallback(images, list(names), batch_index)
 
-    for batch_index, (images, names) in enumerate(dataloader):
-        process_images_with_fallback(images, list(names), batch_index)
-
-    summary = summarize_metrics(metric_totals, processed)
-    with open(output_path / "metrics.json", "w", encoding="utf-8") as handle:
-        json.dump(summary, handle, indent=2)
-    logger.info("summary: %s", ", ".join(f"{k}={v:.4f}" for k, v in summary.items()))
-    print(f"{task_name}: " + ", ".join(f"{k}={v:.4f}" for k, v in summary.items()))
+        summary = summarize_metrics(metric_totals, processed)
+        with metrics_path.open("w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2)
+        write_run_state("completed")
+        logger.info("summary: %s", ", ".join(f"{k}={v:.4f}" for k, v in summary.items()))
+        print(f"{task_name}: " + ", ".join(f"{k}={v:.4f}" for k, v in summary.items()))
+    except Exception as error:
+        history["error"] = {
+            "type": type(error).__name__,
+            "message": str(error),
+            "at": now_iso(),
+        }
+        write_run_state("failed")
+        raise
 
 
 def load_pipeline(pipeline_path: Path, selected_tasks: List[str] | None):

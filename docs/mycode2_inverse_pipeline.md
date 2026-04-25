@@ -77,6 +77,16 @@ cache. The runner also tries the requested batch size first and automatically
 splits a batch if CUDA reports out-of-memory, so the Colab uses the largest
 working batch size instead of failing immediately.
 
+Each task output folder also gets live run-state JSON files:
+
+- `progress.json`: overwritten throughout the run with status, processed image
+  counts, percent complete, overall elapsed seconds per image, processing-only
+  seconds per image, ETA, and current metrics
+- `history.json`: cumulative per-chunk history, including filenames, timings,
+  running metrics, and OOM split events
+- `metric_history.json`: same history payload under the metric-history name used
+  by the PDHG notebooks
+
 ## Paper Hyperparameters
 
 For the local configs and the Colab notebook, all operators use `sigma=0.05`.

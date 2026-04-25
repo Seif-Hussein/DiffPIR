@@ -521,6 +521,62 @@ cells = [
     ),
     code(
         """
+        #@title Show progress and timing history
+        from pathlib import Path
+        import json
+        import pandas as pd
+        from IPython.display import display
+
+        save_root = Path(last_context["save_root"])
+
+        progress_rows = []
+        for progress_path in sorted(save_root.glob("*/progress.json")):
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            progress_rows.append(
+                {
+                    "run": progress_path.parent.name,
+                    "status": progress.get("status"),
+                    "processed": progress.get("processed_images"),
+                    "total": progress.get("total_images"),
+                    "percent": progress.get("percent_complete"),
+                    "overall seconds/image": progress.get("elapsed_seconds_per_image"),
+                    "processing seconds/image": progress.get("processing_elapsed_seconds_per_image"),
+                    "eta_seconds": progress.get("estimated_remaining_seconds"),
+                    "processing_eta_seconds": progress.get("estimated_processing_remaining_seconds"),
+                    "updated_at": progress.get("updated_at"),
+                }
+            )
+
+        display(pd.DataFrame(progress_rows))
+
+        history_rows = []
+        for history_path in sorted(save_root.glob("*/history.json")):
+            history = json.loads(history_path.read_text(encoding="utf-8"))
+            chunks = history.get("chunks", [])
+            last_chunk = chunks[-1] if chunks else {}
+            history_rows.append(
+                {
+                    "run": history_path.parent.name,
+                    "status": history.get("status"),
+                    "chunks": len(chunks),
+                    "overall seconds/image": history.get("elapsed_seconds_per_image"),
+                    "processing seconds/image": history.get("processing_elapsed_seconds_per_image"),
+                    "last chunk seconds/image": last_chunk.get("elapsed_seconds_per_image"),
+                    "processed": history.get("processed_images"),
+                    "total": history.get("total_images"),
+                    "oom retries": len(history.get("oom_retries", [])),
+                }
+            )
+
+        display(pd.DataFrame(history_rows))
+
+        for progress_path in sorted(save_root.glob("*/progress.json")):
+            print(f"\\n{progress_path}")
+            print(progress_path.read_text(encoding="utf-8"))
+        """
+    ),
+    code(
+        """
         #@title Summarize metrics and preview outputs
         from pathlib import Path
         import json
