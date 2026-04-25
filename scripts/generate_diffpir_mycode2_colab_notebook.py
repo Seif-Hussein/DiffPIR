@@ -76,6 +76,7 @@ cells = [
         TOTAL_IMAGES = 100  #@param {type:"integer"}
         BATCH_SIZE = 100  #@param {type:"integer"}
         SEED = 42  #@param {type:"integer"}
+        RANDOMIZE_SEED = False  #@param {type:"boolean"}
 
         TASKS = [
             "down_sampling",
@@ -230,9 +231,15 @@ cells = [
         """
         #@title Write Colab-specific pipeline configs
         from pathlib import Path
+        import random
         import yaml
 
         measurement_sigma = 0.05
+        effective_seed = (
+            random.SystemRandom().randint(0, 2**31 - 1)
+            if RANDOMIZE_SEED
+            else int(SEED)
+        )
         task_dir = Path("configs/colab_mycode2_inverse")
         task_dir.mkdir(parents=True, exist_ok=True)
 
@@ -354,7 +361,7 @@ cells = [
 
         pipeline = {
             "defaults": {
-                "seed": int(SEED),
+                "seed": int(effective_seed),
                 "gpu": 0,
                 "name": "DiffPIR_colab",
                 "total_images": int(effective_total_images),
@@ -402,6 +409,7 @@ cells = [
         }
         pipeline_path = Path("configs/colab_mycode2_inverse_pipeline.yaml")
         pipeline_path.write_text(yaml.safe_dump(pipeline, sort_keys=False))
+        print("seed:", effective_seed)
         print(pipeline_path)
         """
     ),
@@ -422,6 +430,8 @@ cells = [
             str(effective_total_images),
             "--batch-size",
             str(BATCH_SIZE),
+            "--seed",
+            str(effective_seed),
             "--calc-lpips",
             str(CALC_LPIPS).lower(),
             "--dry-run",
@@ -458,6 +468,8 @@ cells = [
             str(effective_total_images),
             "--batch-size",
             str(BATCH_SIZE),
+            "--seed",
+            str(effective_seed),
             "--calc-lpips",
             str(CALC_LPIPS).lower(),
         ]
@@ -478,6 +490,7 @@ cells = [
         print(f"Dataset: {effective_data_root}")
         print(f"Images: {effective_total_images}")
         print(f"Requested batch size: {BATCH_SIZE}")
+        print(f"Seed: {effective_seed}")
         print(f"Log: {latest_log_path}")
         print("\\nCommand:\\n")
         print(" ".join(shlex.quote(part) for part in run_cmd))

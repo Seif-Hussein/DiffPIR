@@ -42,6 +42,12 @@ Run a subset:
 python main_ddpir_mycode2.py --tasks down_sampling gaussian_blur phase_retrieval
 ```
 
+Override the random seed:
+
+```powershell
+python main_ddpir_mycode2.py --seed 42
+```
+
 Quick smoke run:
 
 ```powershell
@@ -69,7 +75,10 @@ The Colab defaults now mirror the PDHG single-run notebooks:
 - Drive dataset: `/content/drive/MyDrive/mycode/test-ffhq`
 - image slice: `DATA_START_IDX=0`, `TOTAL_IMAGES=100`
 - requested batch size: `BATCH_SIZE=100`
+- fixed seed: `SEED=42`
 - measurement noise: `sigma=0.05` for every inverse problem
+
+Set `RANDOMIZE_SEED=True` in the Colab controls to draw a fresh seed for a run.
 
 For speed, the notebook copies the selected Drive images into
 `/content/diffpir_test_ffhq_cache` once and runs DiffPIR from that local runtime

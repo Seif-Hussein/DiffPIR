@@ -538,6 +538,7 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
             json.dumps(
                 {
                     "task": task_name,
+                    "seed": seed,
                     "operator": task_config["operator"],
                     "dataset_images": len(dataset),
                     "image_root_path": str(image_root),
@@ -868,6 +869,8 @@ def load_pipeline(pipeline_path: Path, selected_tasks: List[str] | None):
 
 def apply_cli_overrides(task_configs: List[Dict[str, Any]], args):
     for config in task_configs:
+        if args.seed is not None:
+            config["seed"] = int(args.seed)
         if args.total_images is not None:
             config["total_images"] = int(args.total_images)
         if args.batch_size is not None:
@@ -896,6 +899,7 @@ def parse_args():
     )
     parser.add_argument("--total-images", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--iter-num", type=int, default=None)
     parser.add_argument("--calc-lpips", type=str_to_bool, default=None)
     parser.add_argument("--save-dir", default=None)
