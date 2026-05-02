@@ -99,9 +99,12 @@ Each task output folder also gets live run-state JSON files:
   counts, percent complete, overall elapsed seconds per image, processing-only
   seconds per image, ETA, and current metrics
 - `history.json`: cumulative per-chunk history, including filenames, timings,
-  running metrics, and OOM split events
+  running metrics, live `time_series` samples, and OOM split events
 - `metric_history.json`: same history payload under the metric-history name used
   by the PDHG notebooks
+- `time_history.json`: compact live samples from inside the DiffPIR loop, written
+  about every `time_history_interval_seconds` seconds with NFE, elapsed seconds
+  per image, and the selected metrics such as PSNR, SSIM, and LPIPS
 
 ## Paper Hyperparameters
 

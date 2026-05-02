@@ -12,6 +12,7 @@ defaults:
     - psnr
     - ssim
     - lpips
+  time_history_interval_seconds: 1.0
   calc_LPIPS: true
   lpips_net: vgg
 

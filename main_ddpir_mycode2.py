@@ -9,7 +9,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Tuple
 
 import numpy as np
 import torch
@@ -416,6 +416,7 @@ def run_diffpir_batch(
     diffusion,
     config: Dict[str, Any],
     schedule: Dict[str, torch.Tensor],
+    progress_callback: Callable[[Dict[str, Any]], None] | None = None,
 ):
     device = images.device
     x, t_start = initialize_latent(images, y, operator, config, schedule)
@@ -430,6 +431,7 @@ def run_diffpir_batch(
     alphas_cumprod = schedule["alphas_cumprod"]
 
     x0 = x
+    nfe_count = 0
     for seq_index, seq_value in enumerate(seq):
         curr_sigma = sigmas[seq_value].detach().cpu().numpy()
         t_i = find_nearest(reduced_alpha_cumprod, curr_sigma)
@@ -447,6 +449,7 @@ def run_diffpir_batch(
                     ddim_sample=bool(config["ddim_sample"]),
                     alphas_cumprod=alphas_cumprod,
                 )
+                nfe_count += 1
 
             if seq_value != seq[-1]:
                 x0 = apply_data_consistency(x0, y, operator, rhos[t_i], config)
@@ -487,13 +490,47 @@ def run_diffpir_batch(
                 ).clamp_min(0.0)
                 x = sqrt_alpha_effective * x + torch.sqrt(noise_var) * torch.randn_like(x)
 
+            if progress_callback is not None:
+                sample = sample_from_state(x0, x, y, operator, config)
+                progress_callback(
+                    {
+                        "sample": sample.detach(),
+                        "nfe": nfe_count,
+                        "seq_index": seq_index,
+                        "inner_index": inner_index,
+                        "seq_value": int(seq_value),
+                        "diffusion_timestep": int(t_i),
+                        "diffpir_iter_num": len(seq) * int(config["iter_num_U"]),
+                        "is_final_nfe": (
+                            seq_index == len(seq) - 1
+                            and inner_index == int(config["iter_num_U"]) - 1
+                        ),
+                    }
+                )
+
     sample_mode = str(config.get("final_sample", "xt"))
     sample = x0 if sample_mode == "x0" else x
+    return apply_observation_blend(sample, y, operator).clamp(-1.0, 1.0)
+
+
+def apply_observation_blend(sample: torch.Tensor, y: torch.Tensor, operator):
     if hasattr(operator, "mask") and getattr(operator, "mask", None) is not None:
         mask = operator.mask.to(device=sample.device, dtype=torch.bool)
         sample = sample.clone()
         sample = torch.where(mask.expand_as(sample), y, sample)
-    return sample.clamp(-1.0, 1.0)
+    return sample
+
+
+def sample_from_state(
+    x0: torch.Tensor,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    operator,
+    config: Dict[str, Any],
+):
+    sample_mode = str(config.get("final_sample", "xt"))
+    sample = x0 if sample_mode == "x0" else x
+    return apply_observation_blend(sample, y, operator).clamp(-1.0, 1.0)
 
 
 def tensor_minus1_1_to_uint(tensor: torch.Tensor):
@@ -627,6 +664,9 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
                     "task": task_name,
                     "seed": seed,
                     "eval_metrics": metric_names,
+                    "time_history_interval_seconds": float(
+                        task_config.get("time_history_interval_seconds", 0.0) or 0.0
+                    ),
                     "operator": task_config["operator"],
                     "dataset_images": len(dataset),
                     "image_root_path": str(image_root),
@@ -653,8 +693,12 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
     progress_path = output_path / "progress.json"
     history_path = output_path / "history.json"
     metric_history_path = output_path / "metric_history.json"
+    time_history_path = output_path / "time_history.json"
     metrics_path = output_path / "metrics.json"
     log_path = output_path / f"{logger_name}.log"
+    time_history_interval_seconds = float(
+        task_config.get("time_history_interval_seconds", 0.0) or 0.0
+    )
     task_started_at = now_iso()
     task_start_time = time.perf_counter()
     metric_totals = OrderedDict()
@@ -675,6 +719,7 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
             ("requested_batch_size", int(task_config["batch_size"])),
             ("eval_metrics", metric_names),
             ("diffpir_iter_num", int(task_config["diffpir"]["iter_num"])),
+            ("time_history_interval_seconds", time_history_interval_seconds),
             ("started_at", task_started_at),
             ("updated_at", task_started_at),
             ("completed_at", None),
@@ -685,6 +730,8 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
             ("processing_elapsed_seconds", 0.0),
             ("processing_elapsed_seconds_per_image", None),
             ("running_metrics", OrderedDict()),
+            ("latest_time_sample", None),
+            ("time_series", []),
             ("chunks", []),
             ("oom_retries", []),
             ("error", None),
@@ -695,6 +742,33 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
         if processed == 0:
             return OrderedDict()
         return summarize_metrics(metric_totals, processed)
+
+    def write_time_history_state(status: str):
+        payload = OrderedDict(
+            [
+                ("schema_version", 1),
+                ("status", status),
+                ("task", task_name),
+                ("operator", task_config["operator"]),
+                ("seed", seed),
+                ("device", str(device)),
+                ("image_root_path", str(image_root)),
+                ("output_path", str(output_path)),
+                ("requested_total_images", len(dataset)),
+                ("requested_batch_size", int(task_config["batch_size"])),
+                ("eval_metrics", metric_names),
+                ("diffpir_iter_num", int(task_config["diffpir"]["iter_num"])),
+                ("time_history_interval_seconds", time_history_interval_seconds),
+                ("started_at", task_started_at),
+                ("updated_at", now_iso()),
+                ("completed_at", history["completed_at"]),
+                ("processed_images", processed),
+                ("total_images", len(dataset)),
+                ("latest_time_sample", history["latest_time_sample"]),
+                ("samples", history["time_series"]),
+            ]
+        )
+        atomic_write_json(time_history_path, payload)
 
     def write_run_state(status: str, current: Dict[str, Any] | None = None):
         elapsed = time.perf_counter() - task_start_time
@@ -754,8 +828,10 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
                 ("progress_path", str(progress_path)),
                 ("history_path", str(history_path)),
                 ("metric_history_path", str(metric_history_path)),
+                ("time_history_path", str(time_history_path)),
                 ("metrics_path", str(metrics_path)),
                 ("log_path", str(log_path)),
+                ("latest_time_sample", history["latest_time_sample"]),
             ]
         )
         if current is not None:
@@ -764,6 +840,7 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
         atomic_write_json(progress_path, progress)
         atomic_write_json(history_path, history)
         atomic_write_json(metric_history_path, history)
+        write_time_history_state(status)
 
     dataloader = DataLoader(
         dataset,
@@ -807,6 +884,102 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
             try:
                 images = images_cpu.to(device)
                 y = operator.measure(images)
+                last_time_sample_time = None
+
+                def record_time_sample(event: Dict[str, Any]):
+                    nonlocal last_time_sample_time
+                    if time_history_interval_seconds <= 0:
+                        return
+
+                    if torch.cuda.is_available() and event["sample"].is_cuda:
+                        torch.cuda.synchronize(event["sample"].device)
+                    check_time = time.perf_counter()
+                    due_to_interval = (
+                        last_time_sample_time is not None
+                        and check_time - last_time_sample_time >= time_history_interval_seconds
+                    )
+                    due_to_first_interval = (
+                        last_time_sample_time is None
+                        and check_time - chunk_start_time >= time_history_interval_seconds
+                    )
+                    if not (event["is_final_nfe"] or due_to_interval or due_to_first_interval):
+                        return
+
+                    with torch.no_grad():
+                        sample_metrics = metrics_for_batch(
+                            event["sample"],
+                            images,
+                            metric_names=metric_names,
+                            lpips_fn=lpips_fn,
+                        )
+                    if torch.cuda.is_available() and event["sample"].is_cuda:
+                        torch.cuda.synchronize(event["sample"].device)
+
+                    now_time = time.perf_counter()
+                    last_time_sample_time = now_time
+                    task_elapsed = now_time - task_start_time
+                    chunk_elapsed_live = now_time - chunk_start_time
+                    processing_elapsed_live = processing_elapsed_seconds + chunk_elapsed_live
+                    images_in_metric_estimate = processed + batch_size
+                    running_metrics_live = OrderedDict()
+                    for metric_name, metric_value in sample_metrics.items():
+                        running_metrics_live[metric_name] = (
+                            metric_totals.get(metric_name, 0.0)
+                            + metric_value * batch_size
+                        ) / max(1, images_in_metric_estimate)
+
+                    sample_record = OrderedDict(
+                        [
+                            ("sample_index", len(history["time_series"])),
+                            ("at", now_iso()),
+                            ("loader_batch_index", loader_batch_index),
+                            ("chunk_index", chunk_counter),
+                            ("active_batch_size", batch_size),
+                            ("processed_images_completed", processed),
+                            ("images_in_metric_estimate", images_in_metric_estimate),
+                            ("total_images", len(dataset)),
+                            ("nfe", int(event["nfe"])),
+                            ("diffpir_iter_num", int(event["diffpir_iter_num"])),
+                            (
+                                "percent_nfe_complete",
+                                100.0
+                                * float(event["nfe"])
+                                / max(1, int(event["diffpir_iter_num"])),
+                            ),
+                            ("seq_index", int(event["seq_index"])),
+                            ("inner_index", int(event["inner_index"])),
+                            ("seq_value", int(event["seq_value"])),
+                            ("diffusion_timestep", int(event["diffusion_timestep"])),
+                            ("is_final_nfe", bool(event["is_final_nfe"])),
+                            ("task_elapsed_seconds", task_elapsed),
+                            (
+                                "task_elapsed_seconds_per_image",
+                                task_elapsed / max(1, images_in_metric_estimate),
+                            ),
+                            ("current_chunk_elapsed_seconds", chunk_elapsed_live),
+                            (
+                                "current_chunk_elapsed_seconds_per_image",
+                                chunk_elapsed_live / max(1, batch_size),
+                            ),
+                            (
+                                "processing_elapsed_seconds_including_current",
+                                processing_elapsed_live,
+                            ),
+                            (
+                                "processing_elapsed_seconds_per_image_including_current",
+                                processing_elapsed_live / max(1, images_in_metric_estimate),
+                            ),
+                            ("metrics", sample_metrics),
+                            ("running_metrics_including_current_batch", running_metrics_live),
+                        ]
+                    )
+                    history["latest_time_sample"] = sample_record
+                    history["time_series"].append(sample_record)
+                    history["updated_at"] = sample_record["at"]
+                    atomic_write_json(history_path, history)
+                    atomic_write_json(metric_history_path, history)
+                    write_time_history_state("running")
+
                 samples = run_diffpir_batch(
                     images,
                     y,
@@ -815,6 +988,7 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
                     diffusion,
                     task_config["diffpir"],
                     schedule,
+                    progress_callback=record_time_sample,
                 )
                 batch_metrics = metrics_for_batch(
                     samples,
@@ -978,6 +1152,8 @@ def apply_cli_overrides(task_configs: List[Dict[str, Any]], args):
             config["batch_size"] = int(args.batch_size)
         if args.iter_num is not None:
             config["diffpir"]["iter_num"] = int(args.iter_num)
+        if args.time_history_interval is not None:
+            config["time_history_interval_seconds"] = float(args.time_history_interval)
         if args.eval_metrics is not None:
             metrics = parse_metric_names(args.eval_metrics)
             config["eval_metrics"] = metrics
@@ -1008,6 +1184,12 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--iter-num", type=int, default=None)
+    parser.add_argument(
+        "--time-history-interval",
+        type=float,
+        default=None,
+        help="Seconds between live metric snapshots during the DiffPIR sampling loop. Use 0 to disable.",
+    )
     parser.add_argument("--eval-metrics", default=None)
     parser.add_argument("--calc-lpips", type=str_to_bool, default=None)
     parser.add_argument("--save-dir", default=None)

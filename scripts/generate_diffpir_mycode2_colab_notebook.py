@@ -88,6 +88,7 @@ cells = [
         ]
 
         EVAL_METRICS = "psnr;ssim;lpips"  #@param {type:"string"}
+        TIME_HISTORY_INTERVAL_SECONDS = 1.0  #@param {type:"number"}
         SAVE_E = True  #@param {type:"boolean"}
         SAVE_L = False  #@param {type:"boolean"}
         SAVE_H = False  #@param {type:"boolean"}
@@ -382,6 +383,7 @@ cells = [
                 "save_L": bool(SAVE_L),
                 "save_H": bool(SAVE_H),
                 "eval_metrics": metric_list,
+                "time_history_interval_seconds": float(TIME_HISTORY_INTERVAL_SECONDS),
                 "calc_LPIPS": bool(calc_lpips),
                 "lpips_net": "vgg",
                 "data": {
@@ -446,6 +448,8 @@ cells = [
             str(effective_seed),
             "--eval-metrics",
             ";".join(metric_list),
+            "--time-history-interval",
+            str(float(TIME_HISTORY_INTERVAL_SECONDS)),
             "--dry-run",
         ]
         subprocess.run(cmd, check=True)
@@ -484,6 +488,8 @@ cells = [
             str(effective_seed),
             "--eval-metrics",
             ";".join(metric_list),
+            "--time-history-interval",
+            str(float(TIME_HISTORY_INTERVAL_SECONDS)),
         ]
 
         context_path = run_aux_root / f"{run_tag}.context.json"
@@ -504,6 +510,7 @@ cells = [
         print(f"Requested batch size: {BATCH_SIZE}")
         print(f"Seed: {effective_seed}")
         print(f"Metrics: {metric_list}")
+        print(f"Time history interval: {TIME_HISTORY_INTERVAL_SECONDS} seconds")
         print(f"Log: {latest_log_path}")
         print("\\nCommand:\\n")
         print(" ".join(shlex.quote(part) for part in run_cmd))
@@ -600,6 +607,29 @@ cells = [
             )
 
         display(pd.DataFrame(history_rows))
+
+        time_rows = []
+        for time_history_path in sorted(save_root.glob("*/time_history.json")):
+            time_history = json.loads(time_history_path.read_text(encoding="utf-8"))
+            samples = time_history.get("samples", [])
+            latest = samples[-1] if samples else {}
+            metrics = latest.get("metrics", {})
+            time_rows.append(
+                {
+                    "run": time_history_path.parent.name,
+                    "samples": len(samples),
+                    "latest nfe": latest.get("nfe"),
+                    "latest seconds/image": latest.get(
+                        "processing_elapsed_seconds_per_image_including_current"
+                    ),
+                    "psnr": metrics.get("psnr"),
+                    "ssim": metrics.get("ssim"),
+                    "lpips": metrics.get("lpips"),
+                    "updated_at": time_history.get("updated_at"),
+                }
+            )
+
+        display(pd.DataFrame(time_rows))
 
         for progress_path in sorted(save_root.glob("*/progress.json")):
             print(f"\\n{progress_path}")
