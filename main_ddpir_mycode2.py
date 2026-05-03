@@ -664,6 +664,9 @@ def run_task(task_config: Dict[str, Any], dry_run: bool = False):
                     "task": task_name,
                     "seed": seed,
                     "eval_metrics": metric_names,
+                    "diffpir_iter_num": int(task_config["diffpir"]["iter_num"]),
+                    "diffpir_nfe": int(task_config["diffpir"]["iter_num"])
+                    * int(task_config["diffpir"].get("iter_num_U", 1)),
                     "time_history_interval_seconds": float(
                         task_config.get("time_history_interval_seconds", 0.0) or 0.0
                     ),

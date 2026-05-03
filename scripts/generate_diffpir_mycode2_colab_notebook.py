@@ -36,7 +36,7 @@ cells = [
         Source notes used for the presets:
 
         - DiffPIR paper: `2305.08995v1`, especially Appendix B / Table 3 for the paper's `lambda_` and `zeta` values.
-        - DiffPIR repository: https://github.com/yuanzhi-zhu/DiffPIR for the public runner/config defaults, NFE=100 setting, quadratic sampling sequence, and checkpoint setup.
+        - DiffPIR repository: https://github.com/yuanzhi-zhu/DiffPIR for the public runner/config defaults, NFE setting, quadratic sampling sequence, and checkpoint setup.
         - DAPS/DPS-style inverse-problem repositories: https://github.com/zhangbingliang2019/DAPS and https://github.com/DPS2022/diffusion-posterior-sampling for the broader inverse-problem operator defaults, including phase retrieval.
 
         Important caveat: DiffPIR reports paper defaults for SR/deblur/inpainting, but not for phase retrieval. Phase retrieval below uses the operator default from the inverse-problem repo lineage, plus a conservative DiffPIR first-order-prox starting preset.
@@ -48,14 +48,14 @@ cells = [
 
         | Notebook task | Operator setting | DiffPIR preset |
         |---|---:|---:|
-        | `down_sampling` | x4 downsampling, sigma=0.05 | NFE=100, `lambda_=8.0`, `zeta=0.2` |
-        | `inpainting_rand` | random mask, 70%-71% masked | NFE=100, `lambda_=7.0`, `zeta=1.0` |
-        | `motion_blur` | kernel size 61, intensity 0.5, sigma=0.05 | NFE=100, `lambda_=7.0`, `zeta=0.4` |
-        | `gaussian_blur` | kernel size 61, intensity 3.0, sigma=0.05 | NFE=100, `lambda_=7.0`, `zeta=0.3` |
-        | `inpainting_box` | 128x128 box mask | NFE=100, `lambda_=6.0`, `zeta=0.5` |
-        | `phase_retrieval` | oversample 2.0, sigma=0.05 | NFE=100, `lambda_=8.0`, `zeta=0.3` starter preset |
+        | `down_sampling` | x4 downsampling, sigma=0.05 | default NFE=100, `lambda_=8.0`, `zeta=0.2` |
+        | `inpainting_rand` | random mask, 70%-71% masked | default NFE=100, `lambda_=7.0`, `zeta=1.0` |
+        | `motion_blur` | kernel size 61, intensity 0.5, sigma=0.05 | default NFE=100, `lambda_=7.0`, `zeta=0.4` |
+        | `gaussian_blur` | kernel size 61, intensity 3.0, sigma=0.05 | default NFE=100, `lambda_=7.0`, `zeta=0.3` |
+        | `inpainting_box` | 128x128 box mask | default NFE=100, `lambda_=6.0`, `zeta=0.5` |
+        | `phase_retrieval` | oversample 2.0, sigma=0.05 | default NFE=100, `lambda_=8.0`, `zeta=0.3` starter preset |
 
-        All six inverse problems use measurement noise `sigma=0.05`, matching the setting for these simulations.
+        All six inverse problems use measurement noise `sigma=0.05`, matching the setting for these simulations. Change `DIFFPIR_NFE` in the controls cell to run a different number of neural function evaluations.
         """
     ),
     code(
@@ -75,6 +75,7 @@ cells = [
         DATA_START_IDX = 0  #@param {type:"integer"}
         TOTAL_IMAGES = 100  #@param {type:"integer"}
         BATCH_SIZE = 100  #@param {type:"integer"}
+        DIFFPIR_NFE = 100  #@param {type:"integer"}
         SEED = 42  #@param {type:"integer"}
         RANDOMIZE_SEED = False  #@param {type:"boolean"}
 
@@ -246,6 +247,9 @@ cells = [
             raise ValueError(f"Unknown metrics: {unknown_metrics}")
         if not metric_list:
             raise ValueError("EVAL_METRICS must contain at least one metric.")
+        diffpir_nfe = int(DIFFPIR_NFE)
+        if diffpir_nfe < 1:
+            raise ValueError("DIFFPIR_NFE must be at least 1.")
         calc_lpips = "lpips" in metric_list
         effective_seed = (
             random.SystemRandom().randint(0, 2**31 - 1)
@@ -257,7 +261,7 @@ cells = [
 
         common_diffpir = {
             "num_train_timesteps": 1000,
-            "iter_num": 100,
+            "iter_num": diffpir_nfe,
             "iter_num_U": 1,
             "lambda_": 1.0,
             "zeta": 0.1,
@@ -424,6 +428,7 @@ cells = [
         pipeline_path = Path("configs/colab_mycode2_inverse_pipeline.yaml")
         pipeline_path.write_text(yaml.safe_dump(pipeline, sort_keys=False))
         print("seed:", effective_seed)
+        print("DiffPIR NFE:", diffpir_nfe)
         print(pipeline_path)
         """
     ),
@@ -444,6 +449,8 @@ cells = [
             str(effective_total_images),
             "--batch-size",
             str(BATCH_SIZE),
+            "--iter-num",
+            str(diffpir_nfe),
             "--seed",
             str(effective_seed),
             "--eval-metrics",
@@ -484,6 +491,8 @@ cells = [
             str(effective_total_images),
             "--batch-size",
             str(BATCH_SIZE),
+            "--iter-num",
+            str(diffpir_nfe),
             "--seed",
             str(effective_seed),
             "--eval-metrics",
@@ -508,6 +517,7 @@ cells = [
         print(f"Dataset: {effective_data_root}")
         print(f"Images: {effective_total_images}")
         print(f"Requested batch size: {BATCH_SIZE}")
+        print(f"DiffPIR NFE: {diffpir_nfe}")
         print(f"Seed: {effective_seed}")
         print(f"Metrics: {metric_list}")
         print(f"Time history interval: {TIME_HISTORY_INTERVAL_SECONDS} seconds")

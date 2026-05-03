@@ -93,6 +93,10 @@ cache. The runner also tries the requested batch size first and automatically
 splits a batch if CUDA reports out-of-memory, so the Colab uses the largest
 working batch size instead of failing immediately.
 
+The notebook exposes `DIFFPIR_NFE` in the controls cell. This maps to DiffPIR's
+`iter_num` setting; with the default `iter_num_U=1`, `DIFFPIR_NFE=100` means
+100 denoiser network evaluations per image.
+
 Each task output folder also gets live run-state JSON files:
 
 - `progress.json`: overwritten throughout the run with status, processed image
